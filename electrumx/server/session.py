@@ -435,6 +435,10 @@ class SessionManager(object):
                 await group.spawn(self._clear_stale_sessions())
                 await group.spawn(self._log_sessions())
                 await group.spawn(self._restart_if_paused())
+        except BaseException as e:
+            self.logger.error('exception!!!')
+            import traceback
+            traceback.print_exc()
         finally:
             # Close servers and sessions
             self.state = self.SHUTTING_DOWN
