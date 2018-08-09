@@ -28,7 +28,7 @@ class ServerBase(object):
       Upon return the event loop runs until the shutdown signal is received.
     '''
 
-    SUPPRESS_MESSAGE_REGEX = re.compile('SSH handshake')
+    SUPPRESS_MESSAGE_REGEX = re.compile('SSH handshake|SSL handshake failed|SSL error in data received')
     SUPPRESS_TASK_REGEX = re.compile('accept_connection2')
     PYTHON_MIN_VERSION = (3, 6)
 
