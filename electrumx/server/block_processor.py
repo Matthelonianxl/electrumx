@@ -50,13 +50,18 @@ class Prefetcher(object):
         '''Loop forever polling for more blocks.'''
         await self.reset_height(bp_height)
         while True:
+            self.logger.info(f'prefetcher.main_loop() iteration starts')
             try:
                 # Sleep a while if there is nothing to prefetch
+                self.logger.info(f'prefetcher.main_loop() waiting for refill event')
                 await self.refill_event.wait()
+                self.logger.info(f'prefetcher.main_loop() awaken after refill event')
                 if not await self._prefetch_blocks():
+                    self.logger.info(f'prefetcher.main_loop() branch entered; sleep starts for {self.polling_delay} sec')
                     await asyncio.sleep(self.polling_delay)
             except DaemonError as e:
                 self.logger.info(f'ignoring daemon error: {e}')
+            self.logger.info(f'prefetcher.main_loop() iteration ends')
 
     def get_prefetched_blocks(self):
         '''Called by block processor when it is processing queued blocks.'''
@@ -94,9 +99,12 @@ class Prefetcher(object):
 
         Repeats until the queue is full or caught up.
         '''
+        self.logger.info(f'_prefetch_blocks() entered')
         daemon = self.daemon
         daemon_height = await daemon.height()
+        self.logger.info(f'_prefetch_blocks() waiting for semaphore')
         async with self.semaphore:
+            self.logger.info(f'_prefetch_blocks() acquired semaphore')
             while self.cache_size < self.min_cache_size:
                 # Try and catch up all blocks but limit to room in cache.
                 # Constrain fetch count to between 0 and 500 regardless;
@@ -104,9 +112,13 @@ class Prefetcher(object):
                 cache_room = self.min_cache_size // self.ave_size
                 count = min(daemon_height - self.fetched_height, cache_room)
                 count = min(500, max(count, 0))
+                self.logger.info(f'_prefetch_blocks() cache_room {cache_room}, count {count}')
                 if not count:
+                    self.logger.info(f'_prefetch_blocks() not count branch. exiting')
                     self.caught_up = True
                     return False
+
+                self.logger.info(f'_prefetch_blocks() self.fetched_height {self.fetched_height}')
 
                 first = self.fetched_height + 1
                 hex_hashes = await daemon.block_hex_hashes(first, count)
@@ -114,6 +126,7 @@ class Prefetcher(object):
                     self.logger.info('new block height {:,d} hash {}'
                                      .format(first + count-1, hex_hashes[-1]))
                 blocks = await daemon.raw_blocks(hex_hashes)
+                self.logger.info(f'_prefetch_blocks() got blocks from daemon')
 
                 assert count == len(blocks)
 
@@ -130,12 +143,14 @@ class Prefetcher(object):
                 else:
                     self.ave_size = (size + (10 - count) * self.ave_size) // 10
 
+                self.logger.info(f'_prefetch_blocks() nearing end')
                 self.blocks.extend(blocks)
                 self.cache_size += size
                 self.fetched_height += count
                 self.blocks_event.set()
 
         self.refill_event.clear()
+        self.logger.info(f'_prefetch_blocks() exiting normally')
         return True
 
 
@@ -194,6 +209,7 @@ class BlockProcessor(object):
         '''Process the list of raw blocks passed.  Detects and handles
         reorgs.
         '''
+        self.logger.info(f'check_and_advance_blocks() entered')
         if not raw_blocks:
             return
         first = self.height + 1
@@ -203,21 +219,30 @@ class BlockProcessor(object):
         hprevs = [self.coin.header_prevhash(h) for h in headers]
         chain = [self.tip] + [self.coin.header_hash(h) for h in headers[:-1]]
 
+        self.logger.info(f'check_and_advance_blocks() preparation done')
+
         if hprevs == chain:
+            self.logger.info(f'check_and_advance_blocks() first branch entered')
             start = time.time()
             await self.run_in_thread_with_lock(self.advance_blocks, blocks)
+            self.logger.info(f'check_and_advance_blocks() maybe_flush')
             await self._maybe_flush()
+            self.logger.info(f'check_and_advance_blocks() self.db.first_sync {self.db.first_sync}')
             if not self.db.first_sync:
                 s = '' if len(blocks) == 1 else 's'
                 self.logger.info('processed {:,d} block{} in {:.1f}s'
                                  .format(len(blocks), s,
                                          time.time() - start))
+            self.logger.info(f'check_and_advance_blocks() self._caught_up_event.is_set() {self._caught_up_event.is_set()}')
             if self._caught_up_event.is_set():
+                self.logger.info(f'check_and_advance_blocks() self._caught_up_event.is_set() branch entered')
                 await self.notifications.on_block(self.touched, self.height)
             self.touched = set()
         elif hprevs[0] != chain[0]:
+            self.logger.info(f'check_and_advance_blocks() second branch entered')
             await self.reorg_chain()
         else:
+            self.logger.info(f'check_and_advance_blocks() third branch entered')
             # It is probably possible but extremely rare that what
             # bitcoind returns doesn't form a chain because it
             # reorg-ed the chain as it was processing the batched
@@ -226,6 +251,7 @@ class BlockProcessor(object):
             self.logger.warning('daemon blocks do not form a chain; '
                                 'resetting the prefetcher')
             await self.prefetcher.reset_height(self.height)
+        self.logger.info(f'check_and_advance_blocks() exiting')
 
     async def reorg_chain(self, count=None):
         '''Handle a chain reorganisation.
@@ -376,22 +402,39 @@ class BlockProcessor(object):
 
         It is already verified they correctly connect onto our tip.
         '''
-        min_height = self.db.min_undo_height(self.daemon.cached_height())
-        height = self.height
+        self.logger.info(f'advance_blocks() entered')
+        try:
+            min_height = self.db.min_undo_height(self.daemon.cached_height())
+            height = self.height
 
-        for block in blocks:
-            height += 1
-            undo_info = self.advance_txs(block.transactions)
-            if height >= min_height:
-                self.undo_infos.append((undo_info, height))
-                self.db.write_raw_block(block.raw, height)
+            self.logger.info(f'advance_blocks() for block in blocks')
+            for block in blocks:
+                self.logger.info(f'advance_blocks() loop iteration starts')
+                height += 1
+                self.logger.info(f'advance_blocks() advance_txs starts')
+                undo_info = self.advance_txs(block.transactions)
+                self.logger.info(f'advance_blocks() advance_txs ends')
+                if height >= min_height:
+                    self.logger.info(f'advance_blocks() if height >= min_height entered')
+                    self.undo_infos.append((undo_info, height))
+                    self.db.write_raw_block(block.raw, height)
 
-        headers = [block.header for block in blocks]
-        self.height = height
-        self.headers.extend(headers)
-        self.tip = self.coin.header_hash(headers[-1])
+            self.logger.info(f'advance_blocks() after loop')
+            headers = [block.header for block in blocks]
+            self.height = height
+            self.headers.extend(headers)
+            self.tip = self.coin.header_hash(headers[-1])
+            self.logger.info(f'advance_blocks() exiting normally')
+        except BaseException as e:
+            self.logger.error(f'advance_blocks() exception: {(repr(e))}')
+            import traceback
+            self.logger.error(f'advance_blocks() traceback: {traceback.format_tb(e.__traceback__)}')
+            raise e
+        finally:
+            self.logger.info(f'advance_blocks() exiting in finally')
 
     def advance_txs(self, txs):
+        self.logger.info(f'advance_txs() entered')
         self.tx_hashes.append(b''.join(tx_hash for tx, tx_hash in txs))
 
         # Use local vars for speed in the loops
@@ -406,6 +449,7 @@ class BlockProcessor(object):
         hashXs_by_tx = []
         append_hashXs = hashXs_by_tx.append
 
+        self.logger.info(f'advance_txs() "for tx, tx_hash in txs" loop starts')
         for tx, tx_hash in txs:
             hashXs = []
             append_hashX = hashXs.append
@@ -432,11 +476,13 @@ class BlockProcessor(object):
             update_touched(hashXs)
             tx_num += 1
 
+        self.logger.info(f'advance_txs() "for tx, tx_hash in txs" loop ended')
         self.db.history.add_unflushed(hashXs_by_tx, self.tx_count)
+        self.logger.info(f'advance_txs() exiting soon; cp')
 
         self.tx_count = tx_num
         self.db.tx_counts.append(tx_num)
-
+        self.logger.info(f'advance_txs() exiting')
         return undo_info
 
     def backup_blocks(self, raw_blocks):
@@ -605,18 +651,28 @@ class BlockProcessor(object):
     async def _process_prefetched_blocks(self):
         '''Loop forever processing blocks as they arrive.'''
         while True:
+            self.logger.info(f'_process_prefetched_blocks(). iteration starts. self.height {self.height}, daemon cached height {self.daemon.cached_height()}')
             if self.height == self.daemon.cached_height():
                 if not self._caught_up_event.is_set():
                     await self._first_caught_up()
                     self._caught_up_event.set()
+            self.logger.info(f'_process_prefetched_blocks(). start waiting for blocks_event')
             await self.blocks_event.wait()
+            self.logger.info(f'_process_prefetched_blocks(). finished waiting for blocks_event')
             self.blocks_event.clear()
+            self.logger.info(f'_process_prefetched_blocks(). cleared blocks_event')
+            self.logger.info(f'_process_prefetched_blocks(). self.reorg_count {self.reorg_count}')
             if self.reorg_count:
+                self.logger.info(f'_process_prefetched_blocks(). first branch')
                 await self.reorg_chain(self.reorg_count)
+                self.logger.info(f'_process_prefetched_blocks(). reorg chain finished')
                 self.reorg_count = 0
             else:
+                self.logger.info(f'_process_prefetched_blocks(). second branch')
                 blocks = self.prefetcher.get_prefetched_blocks()
+                self.logger.info(f'_process_prefetched_blocks(). got block from prefetcher')
                 await self.check_and_advance_blocks(blocks)
+            self.logger.info(f'_process_prefetched_blocks(). iteration ends')
 
     async def _first_caught_up(self):
         self.logger.info(f'caught up to height {self.height}')

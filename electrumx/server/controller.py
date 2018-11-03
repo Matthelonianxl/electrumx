@@ -125,7 +125,15 @@ class Controller(ServerBase):
             await group.spawn(db.populate_header_merkle_cache())
             await group.spawn(mempool.keep_synchronized(mempool_event))
 
-        async with TaskGroup() as group:
-            await group.spawn(session_mgr.serve(notifications, mempool_event))
-            await group.spawn(bp.fetch_and_process_blocks(caught_up_event))
-            await group.spawn(wait_for_catchup())
+        try:
+            async with TaskGroup() as group:
+                await group.spawn(session_mgr.serve(notifications, mempool_event))
+                await group.spawn(bp.fetch_and_process_blocks(caught_up_event))
+                await group.spawn(wait_for_catchup())
+        except BaseException as e:
+            self.logger.error(f'exiting serve() with exception: {(repr(e))}')
+            import traceback
+            self.logger.error(f'serve() traceback: {traceback.format_tb(e.__traceback__)}')
+            raise e
+        finally:
+            self.logger.info(f'exiting serve()')
