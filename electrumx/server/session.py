@@ -559,17 +559,31 @@ class SessionManager(object):
 
     async def _notify_sessions(self, height, touched):
         '''Notify sessions about height changes and touched addresses.'''
-        height_changed = height != self.notified_height
-        if height_changed:
-            await self._refresh_hsub_results(height)
-            # Invalidate our history cache for touched hashXs
-            hc = self.history_cache
-            for hashX in set(hc).intersection(touched):
-                del hc[hashX]
+        self.logger.info(f'_notify_sessions() entered, height {height}')
+        try:
+            height_changed = height != self.notified_height
+            self.logger.info(f'_notify_sessions() height_changed {height_changed}')
+            if height_changed:
+                self.logger.info(f'_notify_sessions() height_changed branch entered')
+                await self._refresh_hsub_results(height)
+                # Invalidate our history cache for touched hashXs
+                self.logger.info(f'_notify_sessions() Invalidate our history cache for touched hashXs')
+                hc = self.history_cache
+                for hashX in set(hc).intersection(touched):
+                    del hc[hashX]
 
-        async with TaskGroup() as group:
-            for session in self.sessions:
-                await group.spawn(session.notify(touched, height_changed))
+            self.logger.info(f'_notify_sessions() taskgroup starts')
+            async with TaskGroup() as group:
+                for session in self.sessions:
+                    await group.spawn(session.notify(touched, height_changed))
+            self.logger.info(f'_notify_sessions() taskgroup finished')
+        except BaseException as e:
+            self.logger.error(f'_notify_sessions() exception: {(repr(e))}')
+            import traceback
+            self.logger.error(f'_notify_sessions() traceback: {traceback.format_tb(e.__traceback__)}')
+            raise e
+        finally:
+            self.logger.info(f'_notify_sessions() exiting in finally')
 
     def add_session(self, session):
         self.sessions.add(session)
