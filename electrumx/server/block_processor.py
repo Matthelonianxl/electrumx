@@ -236,7 +236,15 @@ class BlockProcessor(object):
             self.logger.info(f'check_and_advance_blocks() self._caught_up_event.is_set() {self._caught_up_event.is_set()}')
             if self._caught_up_event.is_set():
                 self.logger.info(f'check_and_advance_blocks() self._caught_up_event.is_set() branch entered')
-                await self.notifications.on_block(self.touched, self.height)
+                try:
+                    await self.notifications.on_block(self.touched, self.height)
+                except BaseException as e:
+                    self.logger.error(f'self.notifications.on_block() exception: {(repr(e))}')
+                    import traceback
+                    self.logger.error(f'self.notifications.on_block() traceback: {traceback.format_tb(e.__traceback__)}')
+                    raise e
+                finally:
+                    self.logger.info(f'check_and_advance_blocks() self.notifications.on_block finished')
             self.touched = set()
         elif hprevs[0] != chain[0]:
             self.logger.info(f'check_and_advance_blocks() second branch entered')
